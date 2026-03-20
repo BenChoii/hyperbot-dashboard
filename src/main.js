@@ -86,8 +86,12 @@ document.querySelector('#app').innerHTML = `
     <div class="charts-row">
       <div class="chart-box">
         <div class="chart-title">
-          <span>BTC Price + VWAP + Bollinger</span>
-          <span id="btcPrice" style="color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.85rem">—</span>
+          <span>BTC Price + VWAP + EMA + Bollinger</span>
+          <span style="display:flex;gap:10px;align-items:center">
+            <span id="trendBadge" class="tag" style="font-size:0.6rem">—</span>
+            <span id="volBadge" style="font-size:0.6rem;color:var(--dim);font-family:'JetBrains Mono',monospace">Vol: —</span>
+            <span id="btcPrice" style="color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.85rem">—</span>
+          </span>
         </div>
         <div class="chart-wrap tall"><canvas id="priceChart"></canvas></div>
       </div>
@@ -157,8 +161,12 @@ const priceChart = new Chart($('priceChart'), {
     datasets: [
       { label: 'Price', data: [], borderColor: '#3b82f6', borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false, order: 1 },
       { label: 'VWAP', data: [], borderColor: '#f59e0b', borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, tension: 0.3, fill: false, order: 2 },
-      { label: 'BB Upper', data: [], borderColor: 'rgba(139,92,246,0.35)', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false, order: 3 },
-      { label: 'BB Lower', data: [], borderColor: 'rgba(139,92,246,0.35)', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: '-1', backgroundColor: 'rgba(139,92,246,0.05)', order: 4 }
+      { label: 'BB Upper', data: [], borderColor: 'rgba(139,92,246,0.35)', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false, order: 5 },
+      { label: 'BB Lower', data: [], borderColor: 'rgba(139,92,246,0.35)', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: '-1', backgroundColor: 'rgba(139,92,246,0.05)', order: 6 },
+      { label: 'EMA 9', data: [], borderColor: '#10b981', borderWidth: 1.2, borderDash: [2, 2], pointRadius: 0, tension: 0.3, fill: false, order: 3 },
+      { label: 'EMA 21', data: [], borderColor: '#ef4444', borderWidth: 1.2, borderDash: [2, 2], pointRadius: 0, tension: 0.3, fill: false, order: 4 },
+      { label: 'Entry', data: [], borderColor: 'transparent', borderWidth: 0, pointRadius: 0, pointStyle: 'triangle', showLine: false, order: 0 },
+      { label: 'Exit', data: [], borderColor: 'transparent', borderWidth: 0, pointRadius: 0, pointStyle: 'crossRot', showLine: false, order: 0 }
     ]
   },
   options: {
@@ -270,7 +278,7 @@ async function refresh() {
         `${((dg.budget / (dg.initial_budget * 2)) * 100).toFixed(0)}% to double`;
     }
 
-    // ── Price Chart ──
+    // ── Price Chart with EMA + Trade Markers ──
     const ph = ch.price_history || {};
     const btcH = ph.BTC || [];
     if (btcH.length > 2) {
@@ -280,8 +288,72 @@ async function refresh() {
       priceChart.data.datasets[1].data = btcH.map(p => p.vwap);
       priceChart.data.datasets[2].data = btcH.map(p => p.bb_upper);
       priceChart.data.datasets[3].data = btcH.map(p => p.bb_lower);
+      priceChart.data.datasets[4].data = btcH.map(p => p.ema_9);
+      priceChart.data.datasets[5].data = btcH.map(p => p.ema_21);
+
+      // Build trade entry/exit markers from trade log
+      const entryData = new Array(btcH.length).fill(null);
+      const exitData = new Array(btcH.length).fill(null);
+      const entryColors = new Array(btcH.length).fill('transparent');
+      const exitColors = new Array(btcH.length).fill('transparent');
+      const entryRadius = new Array(btcH.length).fill(0);
+      const exitRadius = new Array(btcH.length).fill(0);
+
+      // Map trade entries and exits to chart points
+      const tl2 = ch.trade_log || [];
+      const pos2 = s.positions || [];
+      for (const t of tl2) {
+        // Find closest chart point for exit
+        let closestIdx = -1, minDiff = Infinity;
+        for (let i = 0; i < btcH.length; i++) {
+          const d = Math.abs(btcH[i].t - t.t);
+          if (d < minDiff) { minDiff = d; closestIdx = i; }
+        }
+        if (closestIdx >= 0 && minDiff < 30) {
+          exitData[closestIdx] = t.exit;
+          exitColors[closestIdx] = t.pnl > 0 ? '#10b981' : '#ef4444';
+          exitRadius[closestIdx] = 7;
+        }
+      }
+      // Mark active position entries
+      for (const p of pos2) {
+        if (!p.coin || (!p.coin.includes('BTC') && !p.coin.startsWith('🎰'))) continue;
+        let closestIdx = -1, minDiff = Infinity;
+        for (let i = 0; i < btcH.length; i++) {
+          const d = Math.abs(btcH[i].price - p.entry_price);
+          if (d < minDiff) { minDiff = d; closestIdx = i; }
+        }
+        if (closestIdx >= 0) {
+          entryData[closestIdx] = p.entry_price;
+          entryColors[closestIdx] = p.side === 'LONG' ? '#10b981' : '#ef4444';
+          entryRadius[closestIdx] = 8;
+        }
+      }
+
+      priceChart.data.datasets[6].data = entryData;
+      priceChart.data.datasets[6].pointBackgroundColor = entryColors;
+      priceChart.data.datasets[6].pointRadius = entryRadius;
+      priceChart.data.datasets[7].data = exitData;
+      priceChart.data.datasets[7].pointBackgroundColor = exitColors;
+      priceChart.data.datasets[7].pointRadius = exitRadius;
+
       priceChart.update('none');
       $('btcPrice').textContent = '$' + btcH[btcH.length - 1].price.toLocaleString();
+
+      // Trend badge
+      const lastTrend = btcH[btcH.length - 1].trend;
+      const tb = $('trendBadge');
+      if (lastTrend === 'UP') { tb.textContent = '↑ UPTREND'; tb.style.background = 'var(--green-bg)'; tb.style.color = 'var(--green)'; }
+      else if (lastTrend === 'DOWN') { tb.textContent = '↓ DOWNTREND'; tb.style.background = 'var(--red-bg)'; tb.style.color = 'var(--red)'; }
+      else { tb.textContent = '↔ RANGING'; tb.style.background = 'var(--blue-bg)'; tb.style.color = 'var(--blue)'; }
+
+      // Volume ratio
+      const volInfo = ind.BTC || {};
+      const curVol = volInfo.current_volume || 0;
+      const avgVol = volInfo.avg_volume || 1;
+      const vr = curVol / avgVol;
+      $('volBadge').textContent = `Vol: ${vr.toFixed(1)}x`;
+      $('volBadge').style.color = vr > 1.5 ? 'var(--green)' : vr < 0.5 ? 'var(--red)' : 'var(--dim)';
     }
 
     // ── Equity Curve ──
